@@ -465,17 +465,38 @@ function exportSalesPNG(db,sales){
   ctx.fillStyle="#222";ctx.font="700 20px Arial";ctx.fillText(`Vendas: ${sales.length}`,50,fy);ctx.fillText(`Descontos: ${money(discounts)}`,300,fy);ctx.fillText(`Faturamento: ${money(total)}`,650,fy);
   return new Promise((resolve,reject)=>canvas.toBlob(blob=>{if(blob){downloadBlob(blob,`relatorio-vendas-${today()}.png`);resolve()}else reject(new Error("Não foi possível gerar a imagem."))},"image/png"));
 }
+function formatSaleQty(item){
+ if(item.kind==="weight") return item.displayQty || `${Number(item.qty||0)*1000} g`;
+ return `${Number(item.qty||0)} ${Number(item.qty||0)===1?"unidade":"unidades"}`;
+}
 function Reports({db}){
  const [period,setPeriod]=useState("day");
  const now=Date.now(),days=period==="day"?1:period==="week"?7:30;
- const sales=db.sales.filter(s=>now-new Date(s.date).getTime()<days*86400000);
- const sum=sales.reduce((a,s)=>a+s.total,0);
- const items={};sales.forEach(s=>(s.items||[]).forEach(i=>{items[i.name]=(items[i.name]||0)+i.qty}));
+ const sales=db.sales
+   .filter(s=>now-new Date(s.date).getTime()<days*86400000)
+   .sort((a,b)=>new Date(b.date)-new Date(a.date));
+ const sum=sales.reduce((a,s)=>a+Number(s.total||0),0);
+ const items={};sales.forEach(s=>(s.items||[]).forEach(i=>{items[i.name]=(items[i.name]||0)+Number(i.qty||0)}));
  const top=Object.entries(items).sort((a,b)=>b[1]-a[1]).slice(0,10);
  const save=fn=>{try{fn()}catch(e){alert(e?.message||"Não foi possível salvar o relatório.")}};
  return <main className="page"><div className="tabs">{[["day","Hoje"],["week","7 dias"],["month","30 dias"]].map(x=><button className={period===x[0]?"sel":""} onClick={()=>setPeriod(x[0])} key={x[0]}>{x[1]}</button>)}</div>
   <div className="reportActions"><button className="secondary" onClick={()=>save(()=>exportSalesCSV(sales))}>💾 CSV</button><button className="secondary" onClick={()=>save(()=>exportSalesTXT(db,sales))}>📄 TXT</button><button className="primary" onClick={()=>save(()=>exportSalesPNG(db,sales))}>🖼️ Imagem PNG</button></div>
-  <div className="stat"><small>Faturamento</small><b>{money(sum)}</b><span>{sales.length} vendas</span></div><h3>Por pagamento</h3><Summary sales={sales}/><h3>Mais vendidos</h3>{top.length?top.map(([n,q])=><div className="rank" key={n}><span>{n}</span><b>{q} un/kg</b></div>):<div className="empty">Ainda não há vendas no período.</div>}
+  <div className="stat"><small>Faturamento</small><b>{money(sum)}</b><span>{sales.length} {sales.length===1?"venda":"vendas"}</span></div>
+
+  <h3>Vendas detalhadas</h3>
+  {sales.length ? <div className="salesReport">{sales.map((s,index)=>{
+    const d=new Date(s.date);
+    return <div className="saleCard" key={s.id||index}>
+      <div className="saleHead"><div><b>Venda {sales.length-index}</b><small>{d.toLocaleDateString("pt-BR")} às {d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</small></div><strong>{money(s.total||0)}</strong></div>
+      <div className="saleItems">{(s.items||[]).map((i,j)=><div className="saleItem" key={i.id||j}><div><b>{i.name}</b><small>Quantidade: {formatSaleQty(i)}{i.unitPrice!=null?` · ${money(i.unitPrice)} cada`:""}</small>{i.additions?.length?<small>Acompanhamentos: {i.additions.map(a=>a.name).join(", ")}</small>:null}</div><strong>{money(i.total||0)}</strong></div>)}</div>
+      <div className="saleFoot"><span>Pagamento: <b>{s.method||"Não informado"}</b></span><span>Total: <b>{money(s.total||0)}</b></span></div>
+    </div>
+  })}</div> : <div className="empty">Ainda não há vendas no período.</div>}
+
+  <h3>Totais por pagamento</h3>
+  <Summary sales={sales}/>
+  <h3>Mais vendidos</h3>
+  {top.length?top.map(([n,q])=><div className="rank" key={n}><span>{n}</span><b>{q} un/kg</b></div>):<div className="empty">Ainda não há vendas no período.</div>}
  </main>
 }
 function Config({db,setDb,notify}){
