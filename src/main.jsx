@@ -441,28 +441,84 @@ function exportSalesTXT(db,sales){
   downloadBlob(new Blob(["\uFEFF"+text],{type:"text/plain;charset=utf-8"}),`relatorio-vendas-${today()}.txt`);
 }
 function exportSalesPNG(db,sales){
-  const W=1080,rowH=54,headerH=220,footerH=170;
-  const H=Math.max(540,headerH+Math.max(1,sales.length)*rowH+footerH);
-  const canvas=document.createElement("canvas");canvas.width=W;canvas.height=H;
-  const ctx=canvas.getContext("2d");if(!ctx)throw new Error("Seu navegador não conseguiu criar a imagem.");
+  const W=1080,headerH=235,footerH=185;
+  const rows=[];
+  const wrapText=(ctx,text,maxWidth)=>{
+    const words=String(text||"").split(/\s+/).filter(Boolean);
+    const lines=[];let line="";
+    words.forEach(word=>{
+      const test=line?`${line} ${word}`:word;
+      if(ctx.measureText(test).width>maxWidth && line){lines.push(line);line=word;}else line=test;
+    });
+    if(line||!lines.length)lines.push(line);
+    return lines;
+  };
+  const canvas=document.createElement("canvas");
+  const measure=canvas.getContext("2d");
+  if(!measure)throw new Error("Seu navegador não conseguiu criar a imagem.");
+  measure.font="17px Arial";
+  sales.forEach((s,i)=>{
+    const items=s.items||[];
+    let itemLines=0;
+    items.forEach(item=>{
+      const additions=item.additions?.length?` · Acompanhamentos: ${item.additions.map(a=>a.name).join(", ")}`:"";
+      const label=`${formatSaleQty(item)} × ${item.name||"Produto"}${additions}`;
+      itemLines+=wrapText(measure,label,690).length;
+    });
+    rows.push({sale:s,index:i,height:92+Math.max(1,itemLines)*27});
+  });
+  const H=Math.max(620,headerH+rows.reduce((sum,r)=>sum+r.height,0)+footerH);
+  canvas.width=W;canvas.height=H;
+  const ctx=canvas.getContext("2d");
+  if(!ctx)throw new Error("Seu navegador não conseguiu criar a imagem.");
   ctx.fillStyle="#fff";ctx.fillRect(0,0,W,H);
   ctx.fillStyle="#171717";ctx.font="700 36px Arial";ctx.fillText(db.settings.storeName||"Minha Açaíteria",50,65);
   ctx.font="700 30px Arial";ctx.fillText("RELATÓRIO DE VENDAS",50,112);
   ctx.font="20px Arial";ctx.fillStyle="#555";ctx.fillText(`Gerado em ${new Date().toLocaleString("pt-BR")}`,50,153);
-  ctx.fillStyle="#eee";ctx.fillRect(40,175,W-80,52);
-  ctx.fillStyle="#222";ctx.font="700 17px Arial";
-  ctx.fillText("DATA/HORA",55,208);ctx.fillText("PAGAMENTO",330,208);ctx.fillText("DESCONTO",600,208);ctx.fillText("TOTAL",870,208);
-  sales.forEach((s,i)=>{
-    const y=headerH+i*rowH;
-    if(i%2===0){ctx.fillStyle="#fafafa";ctx.fillRect(40,y,W-80,rowH)}
-    const d=new Date(s.date);ctx.fillStyle="#222";ctx.font="17px Arial";
-    ctx.fillText(d.toLocaleDateString("pt-BR")+" "+d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}),55,y+34);
-    ctx.fillText(String(s.method||""),330,y+34);ctx.fillText(money(s.discount||0),600,y+34);
-    ctx.font="700 17px Arial";ctx.fillText(money(s.total||0),870,y+34);
+  ctx.font="700 18px Arial";ctx.fillStyle="#222";ctx.fillText("VENDAS E PRODUTOS VENDIDOS",50,195);
+  let y=headerH;
+  rows.forEach((row,idx)=>{
+    const s=row.sale;
+    const bg=idx%2===0?"#fafafa":"#ffffff";
+    ctx.fillStyle=bg;ctx.fillRect(40,y,W-80,row.height-10);
+    ctx.strokeStyle="#e5e7eb";ctx.strokeRect(40,y,W-80,row.height-10);
+    const d=new Date(s.date);
+    ctx.fillStyle="#111827";ctx.font="700 19px Arial";
+    ctx.fillText(`Venda ${sales.length-idx}`,55,y+30);
+    ctx.font="16px Arial";ctx.fillStyle="#555";
+    ctx.fillText(`${d.toLocaleDateString("pt-BR")} às ${d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`,170,y+30);
+    ctx.fillText(`Pagamento: ${s.method||"Não informado"}`,500,y+30);
+    ctx.font="700 19px Arial";ctx.fillStyle="#111827";
+    ctx.fillText(money(s.total||0),885,y+30);
+    ctx.font="700 15px Arial";ctx.fillStyle="#6b7280";
+    ctx.fillText("PRODUTOS",55,y+57);
+    let iy=y+79;
+    ctx.font="17px Arial";
+    (s.items||[]).forEach(item=>{
+      const additions=item.additions?.length?` · Acompanhamentos: ${item.additions.map(a=>a.name).join(", ")}`:"";
+      const label=`${formatSaleQty(item)} × ${item.name||"Produto"}${additions}`;
+      const lines=wrapText(ctx,label,690);
+      lines.forEach((line,lineIndex)=>{
+        ctx.fillStyle="#222";ctx.fillText(line,70,iy);
+        if(lineIndex===lines.length-1){
+          ctx.font="700 16px Arial";ctx.fillText(money(item.total||0),885,iy);
+          ctx.font="17px Arial";
+        }
+        iy+=27;
+      });
+    });
+    y+=row.height;
   });
-  const total=sales.reduce((a,s)=>a+Number(s.total||0),0), discounts=sales.reduce((a,s)=>a+Number(s.discount||0),0);
-  const fy=headerH+Math.max(1,sales.length)*rowH+50;
-  ctx.fillStyle="#222";ctx.font="700 20px Arial";ctx.fillText(`Vendas: ${sales.length}`,50,fy);ctx.fillText(`Descontos: ${money(discounts)}`,300,fy);ctx.fillText(`Faturamento: ${money(total)}`,650,fy);
+  const total=sales.reduce((a,s)=>a+Number(s.total||0),0);
+  const discounts=sales.reduce((a,s)=>a+Number(s.discount||0),0);
+  const fy=y+25;
+  ctx.fillStyle="#f3f4f6";ctx.fillRect(40,fy-30,W-80,115);
+  ctx.fillStyle="#222";ctx.font="700 20px Arial";
+  ctx.fillText(`Vendas: ${sales.length}`,60,fy+5);
+  ctx.fillText(`Descontos: ${money(discounts)}`,300,fy+5);
+  ctx.fillText(`Faturamento: ${money(total)}`,650,fy+5);
+  ctx.font="15px Arial";ctx.fillStyle="#666";
+  ctx.fillText("Cada venda mostra os produtos vendidos, quantidades e valores dos itens.",60,fy+42);
   return new Promise((resolve,reject)=>canvas.toBlob(blob=>{if(blob){downloadBlob(blob,`relatorio-vendas-${today()}.png`);resolve()}else reject(new Error("Não foi possível gerar a imagem."))},"image/png"));
 }
 function formatSaleQty(item){
