@@ -267,7 +267,7 @@ function App(){
     }else finishSale(method,total,0);
   };
   const finishSale=(method,received,change)=>{
-    const sale={id:uid(),date:new Date().toISOString(),items:cart,subtotal,discount:discountAmount,total,method,received,change};
+    const sale={id:uid(),date:new Date().toISOString(),items:cart,subtotal,discount:discountAmount,total,method,received,change,status:"completed"};
     setDb(d=>{
       const products=d.products.map(p=>{
         const used=cart.filter(i=>i.productId===p.id&&i.kind==="unit").reduce((s,i)=>s+i.qty,0);
@@ -280,6 +280,27 @@ function App(){
       return {...d,products,additions,sales:[...d.sales,sale]};
     });
     setCart([]);setDiscount(0);notify(`Venda registrada. Troco: ${money(change)}`);
+  };
+
+  const cancelSale=(saleId)=>{
+    const sale=db.sales.find(s=>s.id===saleId);
+    if(!sale || sale.status==="cancelled") return;
+    if(!confirm(`Cancelar a venda de ${money(sale.total||0)}?\\nO estoque dos itens será devolvido e a venda deixará de contar no faturamento.`)) return;
+    const reason=prompt("Motivo do cancelamento (opcional):","") ?? "";
+    setDb(d=>{
+      const target=d.sales.find(s=>s.id===saleId);
+      if(!target || target.status==="cancelled") return d;
+      const products=d.products.map(p=>{
+        const restored=(target.items||[]).filter(i=>i.productId===p.id&&i.kind==="unit").reduce((sum,i)=>sum+Number(i.qty||0),0);
+        return restored>0?{...p,stock:Number(p.stock||0)+restored}:p;
+      });
+      const additions=d.additions.map(a=>{
+        const restored=(target.items||[]).flatMap(i=>i.additions||[]).filter(x=>x.id===a.id).length;
+        return restored>0?{...a,stock:Number(a.stock||0)+restored}:a;
+      });
+      return {...d,products,additions,sales:d.sales.map(s=>s.id===saleId?{...s,status:"cancelled",cancelledAt:new Date().toISOString(),cancelReason:reason.trim()}:s)};
+    });
+    notify("Venda cancelada e estoque devolvido.");
   };
 
   const movement=(type)=>{
@@ -301,7 +322,7 @@ function App(){
     notify("Caixa aberto.");
   };
   const closeCash=()=>{
-    const sums=paymentSummary(db.sales.filter(s=>s.date.slice(0,10)===today()));
+    const sums=paymentSummary(db.sales.filter(s=>s.date.slice(0,10)===today()&&s.status!=="cancelled"));
     const sang=db.cash.movements.filter(m=>m.type==="sangria").reduce((s,m)=>s+m.value,0);
     const sup=db.cash.movements.filter(m=>m.type==="suprimento").reduce((s,m)=>s+m.value,0);
     const dinheiro=sums.Dinheiro||0;
@@ -325,7 +346,7 @@ function App(){
     {tab==="vendas"&&<Sales {...{db,cart,subtotal,total,discount,discountAmount,discountPct,setDiscount,activeProducts,activeAdds,search,setSearch,addToCart,addAddition,removeItem,pay,notify}}/>}
     {tab==="estoque"&&<Inventory {...{db,setDb,setProductModal,setAddModal,notify}}/>}
     {tab==="caixa"&&<Cash {...{db,openCash,closeCash,movement}}/>}
-    {tab==="relatorios"&&<Reports db={db}/>}
+    {tab==="relatorios"&&<Reports db={db} cancelSale={cancelSale}/>}
     {tab==="config"&&<Config db={db} setDb={setDb} notify={notify}/>}
 
     <nav className="nav">
@@ -397,7 +418,7 @@ function Inventory({db,setProductModal,setAddModal,notify,setDb}){
 }
 
 function Cash({db,openCash,closeCash,movement}){
- const todaySales=db.sales.filter(s=>s.date.slice(0,10)===today());
+ const todaySales=db.sales.filter(s=>s.date.slice(0,10)===today()&&s.status!=="cancelled");
  const sum=todaySales.reduce((s,x)=>s+x.total,0);
  return <main className="page"><div className="cashCard"><div className="cashStatus"><Wallet size={30}/><div><small>Status</small><b>{db.cash.open?"CAIXA ABERTO":"CAIXA FECHADO"}</b></div></div>
   <div className="big">{money(sum)}</div><small>Vendas de hoje</small>
@@ -405,7 +426,7 @@ function Cash({db,openCash,closeCash,movement}){
  </div><h3>Recebimentos hoje</h3><Summary sales={todaySales}/></main>
 }
 function Summary({sales}){const s=paymentSummary(sales);return <div className="summary">{["Dinheiro","PIX","Cartão de Crédito","Cartão de Débito"].map(k=><div key={k}><span>{k}</span><b>{money(s[k]||0)}</b></div>)}</div>}
-function paymentSummary(sales){return sales.reduce((a,s)=>(a[s.method]=(a[s.method]||0)+s.total,a),{})}
+function paymentSummary(sales){return sales.filter(s=>s.status!=="cancelled").reduce((a,s)=>(a[s.method]=(a[s.method]||0)+Number(s.total||0),a),{})}
 
 function downloadBlob(blob,filename){
   const url=URL.createObjectURL(blob);
@@ -525,19 +546,21 @@ function formatSaleQty(item){
  if(item.kind==="weight") return item.displayQty || `${Number(item.qty||0)*1000} g`;
  return `${Number(item.qty||0)} ${Number(item.qty||0)===1?"unidade":"unidades"}`;
 }
-function Reports({db}){
+function Reports({db,cancelSale}){
  const [period,setPeriod]=useState("day");
  const now=Date.now(),days=period==="day"?1:period==="week"?7:30;
- const sales=db.sales
+ const allSales=db.sales
    .filter(s=>now-new Date(s.date).getTime()<days*86400000)
    .sort((a,b)=>new Date(b.date)-new Date(a.date));
+ const sales=allSales.filter(s=>s.status!=="cancelled");
+ const cancelledSales=allSales.filter(s=>s.status==="cancelled");
  const sum=sales.reduce((a,s)=>a+Number(s.total||0),0);
  const items={};sales.forEach(s=>(s.items||[]).forEach(i=>{items[i.name]=(items[i.name]||0)+Number(i.qty||0)}));
  const top=Object.entries(items).sort((a,b)=>b[1]-a[1]).slice(0,10);
  const save=fn=>{try{fn()}catch(e){alert(e?.message||"Não foi possível salvar o relatório.")}};
  return <main className="page"><div className="tabs">{[["day","Hoje"],["week","7 dias"],["month","30 dias"]].map(x=><button className={period===x[0]?"sel":""} onClick={()=>setPeriod(x[0])} key={x[0]}>{x[1]}</button>)}</div>
   <div className="reportActions"><button className="secondary" onClick={()=>save(()=>exportSalesCSV(sales))}>💾 CSV</button><button className="secondary" onClick={()=>save(()=>exportSalesTXT(db,sales))}>📄 TXT</button><button className="primary" onClick={()=>save(()=>exportSalesPNG(db,sales))}>🖼️ Imagem PNG</button></div>
-  <div className="stat"><small>Faturamento</small><b>{money(sum)}</b><span>{sales.length} {sales.length===1?"venda":"vendas"}</span></div>
+  <div className="stat"><small>Faturamento</small><b>{money(sum)}</b><span>{sales.length} {sales.length===1?"venda":"vendas"}{cancelledSales.length?` • ${cancelledSales.length} cancelada${cancelledSales.length===1?"":"s"}`:""}</span></div>
 
   <h3>Vendas detalhadas</h3>
   {sales.length ? <div className="salesReport">{sales.map((s,index)=>{
@@ -546,8 +569,18 @@ function Reports({db}){
       <div className="saleHead"><div><b>Venda {sales.length-index}</b><small>{d.toLocaleDateString("pt-BR")} às {d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</small></div><strong>{money(s.total||0)}</strong></div>
       <div className="saleItems">{(s.items||[]).map((i,j)=><div className="saleItem" key={i.id||j}><div><b>{i.name}</b><small>Quantidade: {formatSaleQty(i)}{i.unitPrice!=null?` · ${money(i.unitPrice)} cada`:""}</small>{i.additions?.length?<small>Acompanhamentos: {i.additions.map(a=>a.name).join(", ")}</small>:null}</div><strong>{money(i.total||0)}</strong></div>)}</div>
       <div className="saleFoot"><span>Pagamento: <b>{s.method||"Não informado"}</b></span><span>Total: <b>{money(s.total||0)}</b></span></div>
+      <button className="cancelSaleBtn" onClick={()=>cancelSale(s.id)}>✕ Cancelar venda</button>
     </div>
   })}</div> : <div className="empty">Ainda não há vendas no período.</div>}
+
+  {cancelledSales.length>0&&<><h3>Vendas canceladas</h3><div className="salesReport cancelledSales">{cancelledSales.map((s,index)=>{
+    const d=new Date(s.date), cd=s.cancelledAt?new Date(s.cancelledAt):null;
+    return <div className="saleCard cancelledCard" key={s.id||`cancelled-${index}`}>
+      <div className="saleHead"><div><b>Venda cancelada</b><small>{d.toLocaleDateString("pt-BR")} às {d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</small></div><strong>{money(s.total||0)}</strong></div>
+      <div className="saleItems">{(s.items||[]).map((i,j)=><div className="saleItem" key={i.id||j}><div><b>{i.name}</b><small>Quantidade: {formatSaleQty(i)}</small></div><strong>{money(i.total||0)}</strong></div>)}</div>
+      <div className="saleFoot"><span>Cancelada{cd?` em ${cd.toLocaleString("pt-BR")}`:""}</span><span>{s.cancelReason?`Motivo: ${s.cancelReason}`:"Sem motivo informado"}</span></div>
+    </div>
+  })}</div></>}
 
   <h3>Totais por pagamento</h3>
   <Summary sales={sales}/>
